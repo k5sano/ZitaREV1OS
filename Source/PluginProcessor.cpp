@@ -89,15 +89,30 @@ void ZitaRev1OSProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     _reverb.init (static_cast<float> (osRate), /*ambis=*/false);
     _reverbReady = true;
 
-    // APVTS 現在値を反映（カウンタ不一致を設定し、最初の processBlock で prepare() がランプを実行）
+    // APVTS 現在値を反映（内部カウンタに差分を発生させる）
     syncAllParams();
 
-    // ※ ここで prepare() を呼ばない
-    //    prepare() はランプ差分 (_d0/_d1) を計算するだけで、実際のゲイン更新は process() 内で行われる
-    //    prepare() を process() なしに呼ぶとカウンタだけ同期され、_g0 = _g1 = 0 が固定されて無音になる
+    // ★ バグ①修正：prepare() を必ず呼ぶ
+    //    これで _d0/_d1 が計算され、process() 内で _g0/_g1 が 0 から目標値へランプする
+    _reverb.prepare (osBlock);
 
-    // dry バッファを OS 後サイズで確保
-    _dryBuffer.setSize (2, osBlock);
+    // ★ バグ③修正：dryBuffer を osBlock サイズで確保
+    _dryBuffer.setSize (2, osBlock, false, true, false);
+
+    // ダミーの無音ブロックを流して _g0/_g1 を目標値まで進める
+    {
+        const int warmupFrames = osBlock;
+        std::vector<float> silence (warmupFrames, 0.0f);
+        std::vector<float> outBuf  (warmupFrames, 0.0f);
+        float* wi[4] = { silence.data(), silence.data(), nullptr, nullptr };
+        float* wo[4] = { outBuf.data(),  outBuf.data(),  nullptr, nullptr };
+
+        for (int i = 0; i < 4; ++i)
+        {
+            _reverb.prepare (osBlock);
+            _reverb.process (osBlock, wi, wo);
+        }
+    }
 }
 
 void ZitaRev1OSProcessor::releaseResources()
@@ -135,9 +150,14 @@ void ZitaRev1OSProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const int osN = static_cast<int> (osBlock.getNumSamples());
 
-    // ② dry コピー（in-place 禁止）
+    // ★ バグ③修正：実際の osN に合わせて dryBuffer を動的確保
+    if (_dryBuffer.getNumSamples() < osN)
+        _dryBuffer.setSize (2, osN, false, true, false);
+
+    // ② ★ バグ②修正：dry コピーを osBlock から取る
     for (int ch = 0; ch < 2; ++ch)
-        _dryBuffer.copyFrom (ch, 0, osBlock.getChannelPointer (ch), osN);
+        _dryBuffer.copyFrom (ch, 0,
+                             osBlock.getChannelPointer (ch), osN);
 
     // ③ inp / out ポインタ配列（4 要素必須）
     float* inp[4] = {
@@ -158,6 +178,16 @@ void ZitaRev1OSProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // ⑤ リバーブ処理本体
     _reverb.process (osN, inp, out);
+
+#ifdef JUCE_DEBUG
+    {
+        // 最初の出力サンプルが 0 でないか確認
+        float outL = osBlock.getChannelPointer(0)[0];
+        float outR = osBlock.getChannelPointer(1)[0];
+        DBG ("ZitaRev1OS out[0] L=" + juce::String(outL)
+             + "  R=" + juce::String(outR));
+    }
+#endif
 
     // ⑥ ダウンサンプル → buffer へ書き戻し
     _oversampler.processSamplesDown (inputBlock);
