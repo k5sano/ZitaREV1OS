@@ -92,27 +92,13 @@ void ZitaRev1OSProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // APVTS 現在値を反映（内部カウンタに差分を発生させる）
     syncAllParams();
 
-    // ★ バグ①修正：prepare() を必ず呼ぶ
-    //    これで _d0/_d1 が計算され、process() 内で _g0/_g1 が 0 から目標値へランプする
-    _reverb.prepare (osBlock);
-
-    // ★ バグ③修正：dryBuffer を osBlock サイズで確保
+    // dryBuffer を osBlock サイズで確保
     _dryBuffer.setSize (2, osBlock, false, true, false);
 
-    // ダミーの無音ブロックを流して _g0/_g1 を目標値まで進める
-    {
-        const int warmupFrames = osBlock;
-        std::vector<float> silence (warmupFrames, 0.0f);
-        std::vector<float> outBuf  (warmupFrames, 0.0f);
-        float* wi[4] = { silence.data(), silence.data(), nullptr, nullptr };
-        float* wo[4] = { outBuf.data(),  outBuf.data(),  nullptr, nullptr };
-
-        for (int i = 0; i < 4; ++i)
-        {
-            _reverb.prepare (osBlock);
-            _reverb.process (osBlock, wi, wo);
-        }
-    }
+    // ※ prepare()/warmup はここで呼ばない
+    //    _d0/_d1 は process() 後もリセットされないため、prepare() 単体で呼ぶとゲインがオーバーシュートする
+    //    processBlock 内で毎回 syncAllParams() → prepare() → process() と呼ぶことで
+    //    _d0 = (target - current_g0) / nfram が正しく再計算され、1ブロックで収束する
 }
 
 void ZitaRev1OSProcessor::releaseResources()
@@ -174,6 +160,9 @@ void ZitaRev1OSProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     };
 
     // ④ パラメータ更新反映（毎ブロック必須）
+    //    syncAllParams() でカウンタ不一致を強制し、prepare() が _d0/_d1 を
+    //    (target - current_g0) / nfram として再計算 → 1ブロックで目標値に収束
+    syncAllParams();
     _reverb.prepare (osN);
 
     // ⑤ リバーブ処理本体
