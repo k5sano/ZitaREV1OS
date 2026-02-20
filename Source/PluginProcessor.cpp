@@ -89,11 +89,12 @@ void ZitaRev1OSProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     _reverb.init (static_cast<float> (osRate), /*ambis=*/false);
     _reverbReady = true;
 
-    // APVTS 現在値を反映
+    // APVTS 現在値を反映（カウンタ不一致を設定し、最初の processBlock で prepare() がランプを実行）
     syncAllParams();
 
-    // ★ prepare() で _g0/_g1 を初期化（OS後のブロックサイズを渡す）
-    _reverb.prepare (osBlock);
+    // ※ ここで prepare() を呼ばない
+    //    prepare() はランプ差分 (_d0/_d1) を計算するだけで、実際のゲイン更新は process() 内で行われる
+    //    prepare() を process() なしに呼ぶとカウンタだけ同期され、_g0 = _g1 = 0 が固定されて無音になる
 
     // dry バッファを OS 後サイズで確保
     _dryBuffer.setSize (2, osBlock);
